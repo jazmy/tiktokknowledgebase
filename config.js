@@ -1,6 +1,6 @@
 module.exports = {
   PROCESSING_OPTIONS: {
-    CREATE_SCREENSHOTS: true,
+    CREATE_SCREENSHOTS: false,
     MODEL_PROVIDER: "openai",
   },
 
@@ -109,7 +109,7 @@ module.exports = {
       SUMMARY: "Please provide a brief summary of this transcript:",
       TAGS: "Based on this transcript, provide a comma-separated list of relevant tags (maximum 5 tags):",
       NEEDS_SCREENSHOTS:
-        "If the transcript consists solely of mentions of music or the transcript does not include the name and URL of a product then respond with 'True', otherwise respond with 'False'",
+        "If the transcript consists solely of mentions of music or the transcript does not include the name of a product then respond with 'True', otherwise respond with 'False'",
     },
   },
 

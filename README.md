@@ -106,9 +106,9 @@ Follow these detailed steps to set up the project and start processing videos:
 
    This command will read the `package.json` file and install all required packages.
 
-3. **Install Whisper and Download the Model:**
+3. **Install Whisper Model:**
 
-   Whisper is used for audio processing. Install it and download the default `base.en` model by executing:
+   Whisper is used for audio processing. Download the default `base.en` model by executing:
 
    ```sh
    npx whisper-node download
@@ -151,7 +151,8 @@ The configuration parameters are defined in the `config.js` file. Below is a det
 ### Processing Options
 
 - `PROCESSING_OPTIONS`:
-  - `CREATE_SCREENSHOTS`: Enable/disable screenshot generation (default: true)
+  - `CREATE_SCREENSHOTS`: Enable/disable screenshot generation (default: false)
+    NOTE: Processing screenshots can get expensive. For 100 tiktok videos, you'll probably have ~500 screenshots. Which will end up being about $3 in image processing and $1 in summarizing and tagging videos. Price adds up if you're dealing with hundreds or thousands of videos.
   - `MODEL_PROVIDER`: AI model provider to use (default: "openai")
 
 ### API Settings
