@@ -9,13 +9,24 @@ const config = require("./config");
 const winston = require("winston");
 const cliProgress = require("cli-progress");
 const colors = require("ansi-colors");
+const pLimit = require("p-limit");
+const limit = pLimit(config.WHISPER_SETTINGS.CONCURRENT_PROCESSING);
 ffmpeg.setFfmpegPath(ffmpegPath);
+
+// Initialize the Set for processed files
+const processedFiles = new Set();
+
+// File paths from config
+const inputFolder = path.join(__dirname, config.FOLDERS.VIDEOS);
+const audioFolder = path.join(__dirname, config.FOLDERS.AUDIO);
+const outputCsv = path.join(__dirname, config.CSV.OUTPUT.TRANSCRIPTS);
 
 // Create necessary directories first
 const logsDir = path.join(__dirname, "logs");
 const csvDir = path.join(__dirname, config.FOLDERS.CSV);
+const audioDir = path.join(__dirname, config.FOLDERS.AUDIO);
 
-[logsDir, csvDir].forEach((dir) => {
+[logsDir, csvDir, audioDir].forEach((dir) => {
   if (!fs.existsSync(dir)) {
     fs.mkdirSync(dir, { recursive: true });
   }
@@ -52,11 +63,6 @@ if (process.env.NODE_ENV !== "production") {
     })
   );
 }
-
-// File paths from config
-const inputFolder = path.join(__dirname, config.FOLDERS.VIDEOS);
-const audioFolder = path.join(__dirname, config.FOLDERS.AUDIO);
-const outputCsv = path.join(__dirname, config.CSV.OUTPUT.TRANSCRIPTS);
 
 // Whisper options from config
 const options = {
@@ -145,119 +151,160 @@ async function transcribeAudio(audioPath) {
   }
 }
 
-// Helper function to process chunks of videos
 async function processVideoChunk(videos, startIdx, chunkSize) {
-  const chunk = videos.slice(startIdx, startIdx + chunkSize);
-  return Promise.all(chunk.map(processOneVideo));
-}
-
-async function processOneVideo(video) {
-  if (processedFiles.has(video)) {
-    logger.info(`Skipping ${video} as it has already been processed.`);
-    return;
-  }
-
-  const videoPath = path.join(inputFolder, video);
-  const audioPath = path.join(audioFolder, `${path.parse(video).name}.wav`);
-
   try {
-    // Check if audio file already exists
-    if (!fs.existsSync(audioPath)) {
-      // Convert to audio only if it doesn't exist
-      await convertVideoToAudio(videoPath, audioPath);
-      logger.info(`Audio file created at: ${audioPath}`);
-    } else {
-      logger.info(`Using existing audio file: ${audioPath}`);
-    }
+    const chunk = videos.slice(startIdx, startIdx + chunkSize);
 
-    // Transcribe
-    const transcription = await transcribeAudioWithRetry(audioPath);
+    // First, concurrently convert videos to audio with limit
+    const audioConversionPromises = chunk.map((video) => {
+      return async () => {
+        try {
+          const videoPath = path.join(inputFolder, video);
+          const audioPath = path.join(
+            audioFolder,
+            `${path.parse(video).name}.wav`
+          );
 
-    // Write to CSV
-    await csvWriterInstance.writeRecords([{ filename: video, transcription }]);
-    processedFiles.add(video);
-    logger.info(`Transcribed and saved: ${video}`);
+          if (!fs.existsSync(audioPath)) {
+            await convertVideoToAudio(videoPath, audioPath);
+          }
+          return { video, audioPath };
+        } catch (error) {
+          logger.error(
+            `Error in audio conversion for ${video}: ${error.message}`
+          );
+          throw error;
+        }
+      };
+    });
+
+    // Wait for all audio conversions to complete
+    const audioResults = await Promise.all(
+      audioConversionPromises.map((fn) => fn())
+    );
+
+    // Then, concurrently process transcriptions
+    const transcriptionPromises = audioResults.map(({ video, audioPath }) => {
+      return async () => {
+        try {
+          if (processedFiles.has(video)) {
+            logger.info(`Skipping ${video} as it has already been processed.`);
+            return;
+          }
+
+          const transcription = await transcribeAudioWithRetry(audioPath);
+          await csvWriterInstance.writeRecords([
+            { filename: video, transcription },
+          ]);
+          processedFiles.add(video);
+          logger.info(`Transcribed and saved: ${video}`);
+        } catch (error) {
+          logger.error(`Error in transcription for ${video}: ${error.message}`);
+          throw error;
+        }
+      };
+    });
+
+    await Promise.all(transcriptionPromises.map((fn) => fn()));
   } catch (error) {
-    logger.error(`Error processing ${video} after all retries:`, error);
+    logger.error(`Error in processVideoChunk: ${error.message}`);
+    throw error;
   }
 }
 
 async function processVideos() {
-  const videos = fs
-    .readdirSync(inputFolder)
-    .filter((file) =>
-      config.SUPPORTED_FORMATS.VIDEO.includes(path.extname(file).toLowerCase())
+  try {
+    const videos = fs
+      .readdirSync(inputFolder)
+      .filter((file) =>
+        config.SUPPORTED_FORMATS.VIDEO.includes(
+          path.extname(file).toLowerCase()
+        )
+      );
+
+    const totalVideos = videos.length;
+    logger.info(`Found ${totalVideos} videos to process`);
+
+    const progressBar = new cliProgress.SingleBar(
+      {
+        format: `Progress |{bar}| {percentage}% || {value}/{total} Videos`,
+        barCompleteChar: "█",
+        barIncompleteChar: "░",
+        hideCursor: true,
+      },
+      cliProgress.Presets.shades_classic
     );
 
-  const totalVideos = videos.length;
-  logger.info(`Found ${totalVideos} videos to process`);
+    progressBar.start(totalVideos, 0);
 
-  // Create a single progress bar
-  const progressBar = new cliProgress.SingleBar(
-    {
-      format: `{name} |{bar}| {percentage}% || {value}/{total} Videos`,
-      barCompleteChar: "█",
-      barIncompleteChar: "░",
-      hideCursor: true,
-    },
-    cliProgress.Presets.shades_classic
-  );
+    const alreadyProcessed = videos.filter((video) =>
+      processedFiles.has(video)
+    ).length;
+    progressBar.update(alreadyProcessed);
 
-  // Start the progress bar
-  progressBar.start(totalVideos, 0, {
-    name: "Progress",
-  });
-
-  // First, increment for already processed files
-  const alreadyProcessed = videos.filter((video) =>
-    processedFiles.has(video)
-  ).length;
-  progressBar.update(alreadyProcessed);
-
-  // Process remaining videos in chunks
-  for (
-    let i = 0;
-    i < videos.length;
-    i += config.WHISPER_SETTINGS.CONCURRENT_PROCESSING
-  ) {
-    logger.info(
-      `Processing batch ${
-        Math.floor(i / config.WHISPER_SETTINGS.CONCURRENT_PROCESSING) + 1
-      }`
-    );
-    await processVideoChunk(
-      videos,
-      i,
-      config.WHISPER_SETTINGS.CONCURRENT_PROCESSING
-    );
-    // Only increment for newly processed files
-    const newlyProcessed = videos
-      .slice(i, i + config.WHISPER_SETTINGS.CONCURRENT_PROCESSING)
-      .filter((video) => !processedFiles.has(video)).length;
-    if (newlyProcessed > 0) {
-      progressBar.increment(newlyProcessed);
+    for (
+      let i = 0;
+      i < videos.length;
+      i += config.WHISPER_SETTINGS.CONCURRENT_PROCESSING
+    ) {
+      try {
+        logger.info(
+          `Processing batch ${
+            Math.floor(i / config.WHISPER_SETTINGS.CONCURRENT_PROCESSING) + 1
+          }`
+        );
+        await processVideoChunk(
+          videos,
+          i,
+          config.WHISPER_SETTINGS.CONCURRENT_PROCESSING
+        );
+        const newlyProcessed = videos
+          .slice(i, i + config.WHISPER_SETTINGS.CONCURRENT_PROCESSING)
+          .filter((video) => !processedFiles.has(video)).length;
+        if (newlyProcessed > 0) {
+          progressBar.increment(newlyProcessed);
+        }
+      } catch (error) {
+        logger.error(
+          `Error processing batch starting at index ${i}: ${error.message}`
+        );
+        // Continue with next batch instead of stopping completely
+        continue;
+      }
     }
-  }
 
-  progressBar.stop();
-  logger.info(`All transcriptions completed. Results saved in ${outputCsv}`);
-  console.log("\n\x1b[32m%s\x1b[0m", "Done!");
-  process.exit(0);
+    progressBar.stop();
+    logger.info(`All transcriptions completed. Results saved in ${outputCsv}`);
+    console.log("\n\x1b[32m%s\x1b[0m", "Done!");
+    process.exit(0);
+  } catch (error) {
+    logger.error(`Fatal error in processVideos: ${error.message}`);
+    console.error(`\nFatal error: ${error.message}`);
+    process.exit(1);
+  }
 }
 
-// Read existing CSV and start processing
-const processedFiles = new Set();
+// Initialize processing
 if (fs.existsSync(outputCsv)) {
   fs.createReadStream(outputCsv)
     .pipe(csvParser())
     .on("data", (row) => {
-      // Fix the case sensitivity issue with the filename field
       processedFiles.add(row.filename || row.Filename);
     })
     .on("end", () => {
       logger.info("CSV file read successfully");
-      processVideos().catch((error) => logger.error(error));
+      processVideos().catch((error) => {
+        logger.error(`Error in main process: ${error.message}`);
+        process.exit(1);
+      });
+    })
+    .on("error", (error) => {
+      logger.error(`Error reading CSV: ${error.message}`);
+      process.exit(1);
     });
 } else {
-  processVideos().catch((error) => logger.error(error));
+  processVideos().catch((error) => {
+    logger.error(`Error in main process: ${error.message}`);
+    process.exit(1);
+  });
 }

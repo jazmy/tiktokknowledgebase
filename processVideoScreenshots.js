@@ -2,10 +2,12 @@ const fs = require("fs");
 const path = require("path");
 const config = require("./config");
 const logger = require("./services/loggerService");
-const openaiService = require("./services/openaiService");
+const ModelProviderFactory = require("./services/modelProviderFactory");
+const modelProvider = ModelProviderFactory.getProvider();
 const csvService = require("./services/csvService");
 const progressBar = require("./utils/progressBar");
 const ErrorHandler = require("./utils/errorHandler");
+const pLimit = require("p-limit");
 
 async function processAllScreenshots() {
   const screenshotsDir = path.join(__dirname, config.FOLDERS.SCREENSHOTS);
@@ -32,7 +34,7 @@ async function processAllScreenshots() {
     config.CSV.OUTPUT.SCREENSHOTS,
     [
       { id: "filename", title: "Filename" },
-      { id: "screenshot", title: "Screenshot" },
+      { id: "screenshot_count", title: "Screenshot Count" },
       { id: "extracted_text", title: "Extracted Text" },
       { id: "summary", title: "Content Summary" },
       ...config.SCREENSHOT_PROCESSING.COLUMNS.OUTPUT.CUSTOM_FIELDS.map(
@@ -45,95 +47,116 @@ async function processAllScreenshots() {
     fs.existsSync(path.join(__dirname, config.CSV.OUTPUT.SCREENSHOTS))
   );
 
-  // Get already processed screenshots
-  const processedScreenshots = new Set();
+  // Get already processed videos
+  const processedVideos = new Set();
   if (fs.existsSync(path.join(__dirname, config.CSV.OUTPUT.SCREENSHOTS))) {
     const processedEntries = await csvService.readCSV(
       config.CSV.OUTPUT.SCREENSHOTS
     );
     processedEntries.forEach((row) => {
-      const key = `${row.Filename}|${row.Screenshot}`;
-      processedScreenshots.add(key);
+      processedVideos.add(row.Filename);
     });
-    console.log(
-      `Found ${processedScreenshots.size} already processed screenshots`
-    );
+    console.log(`Found ${processedVideos.size} already processed videos`);
   }
+
+  // Initialize concurrent limiters
+  const screenshotLimiter = pLimit(
+    config.SCREENSHOT_PROCESSING.CONCURRENT_PROCESSING.SCREENSHOTS
+  );
 
   // Process each video folder
   const progress = progressBar.createMultiBar(videoFolders.length, {
     name: "Processing Videos",
   });
 
-  for (const videoName of videoFolders) {
-    const folderPath = path.join(screenshotsDir, videoName);
-    const screenshots = fs
-      .readdirSync(folderPath)
-      .filter((file) => file.endsWith(".jpg"))
-      .filter(
-        (screenshot) =>
-          !processedScreenshots.has(`${videoName}.mp4|${screenshot}`)
-      );
+  // Process video folders concurrently
+  await Promise.all(
+    videoFolders.map(async (videoName) => {
+      const filename = `${videoName}.mp4`;
+      if (processedVideos.has(filename)) {
+        console.log(`\nSkipping ${videoName} - already processed`);
+        progress.increment();
+        return;
+      }
 
-    if (screenshots.length === 0) {
+      const folderPath = path.join(screenshotsDir, videoName);
+      const screenshots = fs
+        .readdirSync(folderPath)
+        .filter((file) => file.endsWith(".jpg"));
+
+      if (screenshots.length === 0) {
+        console.log(`\nSkipping ${videoName} - no screenshots found`);
+        progress.increment();
+        return;
+      }
+
       console.log(
-        `\nSkipping ${videoName} - all screenshots already processed`
-      );
-      progress.increment();
-      continue;
-    }
-
-    console.log(
-      `\nProcessing ${screenshots.length} screenshots for ${videoName}`
-    );
-    const analyses = [];
-
-    // Process screenshots in batches
-    for (
-      let i = 0;
-      i < screenshots.length;
-      i += config.SCREENSHOT_PROCESSING.CONCURRENT_PROCESSING.SCREENSHOTS
-    ) {
-      const batch = screenshots.slice(
-        i,
-        i + config.SCREENSHOT_PROCESSING.CONCURRENT_PROCESSING.SCREENSHOTS
+        `\nProcessing ${screenshots.length} screenshots for ${videoName}`
       );
 
-      const batchAnalyses = await Promise.all(
-        batch.map(async (screenshot) => {
-          const imagePath = path.join(folderPath, screenshot);
-          const imageBuffer = await fs.promises.readFile(imagePath);
-          const analysis = await openaiService.analyzeScreenshot(
-            imageBuffer.toString("base64")
-          );
-          return { screenshot, extracted_text: analysis };
-        })
+      // Process all screenshots concurrently with rate limiting
+      const analyses = await Promise.all(
+        screenshots.map((screenshot) =>
+          screenshotLimiter(async () => {
+            try {
+              const imagePath = path.join(folderPath, screenshot);
+              const imageBuffer = await fs.promises.readFile(imagePath);
+              const analysis = await modelProvider.analyzeScreenshot(
+                imageBuffer.toString("base64")
+              );
+              return { screenshot, extracted_text: analysis };
+            } catch (error) {
+              logger.error(
+                `Error processing screenshot ${screenshot}: ${error.message}`
+              );
+              return {
+                screenshot,
+                extracted_text: "Error processing screenshot",
+              };
+            }
+          })
+        )
       );
 
-      analyses.push(...batchAnalyses);
-    }
+      // Combine all extracted text
+      const combinedText = analyses
+        .map((a) => a.extracted_text)
+        .filter(
+          (text) => text !== "Error processing screenshot" && text !== "N/A"
+        )
+        .join("\n\n");
 
-    // Generate summary for all screenshots in this folder
-    const summary = await openaiService.generateSummary(analyses);
+      // Generate summary for all screenshots in this video
+      const summary = await modelProvider.generateSummary([
+        { extracted_text: combinedText },
+      ]);
 
-    // Write results to CSV
-    for (const analysis of analyses) {
+      // Generate custom fields based on all extracted text
+      const customFields = {};
+      for (const field of config.SCREENSHOT_PROCESSING.COLUMNS.OUTPUT
+        .CUSTOM_FIELDS) {
+        const fieldId =
+          field.id || field.name.toLowerCase().replace(/\s+/g, "_");
+        customFields[fieldId] = await modelProvider.generateCustomFieldContent(
+          combinedText,
+          field.prompt
+        );
+      }
+
+      // Write single row for the video
       await csvService.writeRecords(writer, [
         {
-          filename: `${videoName}.mp4`,
-          screenshot: analysis.screenshot,
-          extracted_text: analysis.extracted_text,
+          filename: filename,
+          screenshot_count: screenshots.length,
+          extracted_text: combinedText,
           summary,
-          screenshot_products: await openaiService.generateCustomFieldContent(
-            analysis.extracted_text,
-            config.SCREENSHOT_PROCESSING.COLUMNS.OUTPUT.CUSTOM_FIELDS[0].prompt
-          ),
+          ...customFields,
         },
       ]);
-    }
 
-    progress.increment();
-  }
+      progress.increment();
+    })
+  );
 
   progress.stop();
   logger.info("Screenshot analysis completed successfully");

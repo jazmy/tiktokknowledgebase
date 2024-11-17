@@ -5,8 +5,8 @@
 1. Clone the repository:
 
    ```sh
-   git clone <repository_url>
-   cd <repository_directory>
+   git clone git@github.com:jazmy/tiktokknowledgebase.git
+   cd tiktokknowledgebase
    ```
 
 2. Install dependencies:
@@ -21,11 +21,17 @@
    npx whisper-node download
    ```
 
-4. Update the configuration file:
+press enter to download the base.en as default
+
+4. Rename .env-example to .env and paste in your OpenAI API key
+
+5. Update the configuration file:
 
    The configuration parameters are defined in the `config.js` file. Below is a description of each parameter:
 
-5. Run the video processing pipeline:
+6. Place all your videos into the "videos" folder.
+
+7. Run the video processing pipeline:
 
    ```sh
    node processAllVideos.js

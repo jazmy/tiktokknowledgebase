@@ -1,4 +1,4 @@
-const { exec } = require("child_process");
+const { exec, spawn } = require("child_process");
 const path = require("path");
 const fs = require("fs");
 const config = require("../config");
@@ -6,36 +6,24 @@ const logger = require("../services/loggerService");
 const csvService = require("../services/csvService");
 
 class VideoProcessor {
-  async executeScript(scriptName) {
+  async executeScript(scriptName, waitForExit = false) {
     return new Promise((resolve, reject) => {
-      console.log(`\n\x1b[36m%s\x1b[0m`, `Starting ${scriptName}...`);
-
-      const process = exec(`node ${scriptName}`, (error, stdout, stderr) => {
-        if (error) {
-          console.error(
-            `\x1b[31mError executing ${scriptName}: ${error}\x1b[0m`
-          );
-          reject(error);
-          return;
-        }
+      console.log(`\nStarting ${scriptName}...`);
+      const child = spawn("node", [scriptName], {
+        stdio: "inherit",
       });
 
-      // Stream the output in real-time
-      process.stdout.on("data", (data) => {
-        console.log(data.toString());
-      });
-
-      process.stderr.on("data", (data) => {
-        console.error(`\x1b[31m${data.toString()}\x1b[0m`);
-      });
-
-      process.on("exit", (code) => {
+      child.on("exit", (code) => {
         if (code === 0) {
-          console.log(`\x1b[32m${scriptName} completed successfully\x1b[0m`);
+          console.log(`\n${scriptName} completed successfully`);
           resolve();
         } else {
-          reject(new Error(`${scriptName} exited with code ${code}`));
+          reject(new Error(`Command failed: node ${scriptName}`));
         }
+      });
+
+      child.on("error", (err) => {
+        reject(new Error(`Error executing ${scriptName}: ${err.message}`));
       });
     });
   }
@@ -110,11 +98,14 @@ class VideoProcessor {
     try {
       // Step 1: Create transcripts
       console.log("\n\x1b[35m%s\x1b[0m", "STEP 1: Creating Transcripts");
-      await this.executeScript("createVideoTranscripts.js");
+      await this.executeScript("createVideoTranscripts.js", true);
+
+      // Wait a moment to ensure file system sync
+      await new Promise((resolve) => setTimeout(resolve, 1000));
 
       // Step 2: Process transcripts
       console.log("\n\x1b[35m%s\x1b[0m", "STEP 2: Processing Transcripts");
-      await this.executeScript("processVideoTranscripts.js");
+      await this.executeScript("processVideoTranscripts.js", true);
 
       // Check if any videos need screenshots
       const needsScreenshots = await csvService.checkNeedsScreenshots();
@@ -122,11 +113,11 @@ class VideoProcessor {
       if (needsScreenshots) {
         // Step 3: Create screenshots
         console.log("\n\x1b[35m%s\x1b[0m", "STEP 3: Creating Screenshots");
-        await this.executeScript("createVideoScreenshots.js");
+        await this.executeScript("createVideoScreenshots.js", true);
 
         // Step 4: Process screenshots
         console.log("\n\x1b[35m%s\x1b[0m", "STEP 4: Processing Screenshots");
-        await this.executeScript("processVideoScreenshots.js");
+        await this.executeScript("processVideoScreenshots.js", true);
       } else {
         console.log(
           "\n\x1b[33m%s\x1b[0m",

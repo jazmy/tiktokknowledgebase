@@ -1,4 +1,9 @@
 module.exports = {
+  PROCESSING_OPTIONS: {
+    CREATE_SCREENSHOTS: true,
+    MODEL_PROVIDER: "openai",
+  },
+
   API_SETTINGS: {
     MAX_RETRIES: 3,
     RETRY_DELAY: 2000,
@@ -42,10 +47,10 @@ module.exports = {
       "Extract all text from the image including captions, Product Names and any URLs. If there are no captions,products or URLs, just return N/A. Do not include any other text.",
     SUMMARY_PROMPT:
       "Based on all the extracted text from the video screenshots create a concise summary of the content.",
-    MAX_TOKENS: 500,
+    MAX_TOKENS: 2000,
     CONCURRENT_PROCESSING: {
-      VIDEOS: 3,
-      SCREENSHOTS: 5,
+      VIDEOS: 10,
+      SCREENSHOTS: 10,
     },
     COLUMNS: {
       INPUT: {
@@ -128,7 +133,7 @@ module.exports = {
       MAX_ATTEMPTS: 3,
       DELAY: 5000,
     },
-    CONCURRENT_PROCESSING: 3,
+    CONCURRENT_PROCESSING: 10,
   },
 
   SUPPORTED_FORMATS: {
@@ -151,5 +156,9 @@ module.exports = {
     FORMAT: "{name} |" + "{bar}" + "| {percentage}% || {value}/{total} {unit}",
     CLEAR_ON_COMPLETE: false,
     HIDE_CURSOR: true,
+  },
+
+  API_LIMITS: {
+    CONCURRENT_OPENAI_CALLS: 5,
   },
 };

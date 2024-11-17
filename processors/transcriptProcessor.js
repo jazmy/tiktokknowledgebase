@@ -1,9 +1,11 @@
 const path = require("path");
 const config = require("../config");
 const logger = require("../services/loggerService");
-const openaiService = require("../services/openaiService");
+const ModelProviderFactory = require("../services/modelProviderFactory");
+const modelProvider = ModelProviderFactory.getProvider();
 const csvService = require("../services/csvService");
 const progressBar = require("../utils/progressBar");
+const pLimit = require("p-limit");
 
 class TranscriptProcessor {
   constructor() {
@@ -36,6 +38,8 @@ class TranscriptProcessor {
       ],
       false
     );
+
+    this.limiter = pLimit(config.API_LIMITS.CONCURRENT_OPENAI_CALLS);
   }
 
   async processRow(row, processedCount, totalCount) {
@@ -65,53 +69,75 @@ class TranscriptProcessor {
         };
       }
 
-      const [summary, tags, needs_screenshots] = await Promise.all([
-        openaiService.generateSummary([
-          {
-            extracted_text:
-              row[config.TRANSCRIPT_PROCESSING.COLUMNS.INPUT.TRANSCRIPT],
-          },
-        ]),
-        openaiService.generateCustomFieldContent(
-          row[config.TRANSCRIPT_PROCESSING.COLUMNS.INPUT.TRANSCRIPT],
-          config.TRANSCRIPT_PROCESSING.PROMPTS.TAGS
-        ),
-        openaiService.generateCustomFieldContent(
-          row[config.TRANSCRIPT_PROCESSING.COLUMNS.INPUT.TRANSCRIPT],
-          config.TRANSCRIPT_PROCESSING.PROMPTS.NEEDS_SCREENSHOTS
-        ),
-      ]);
+      try {
+        const [summary, tags, needs_screenshots] = await Promise.all([
+          modelProvider.generateSummary([
+            {
+              extracted_text:
+                row[config.TRANSCRIPT_PROCESSING.COLUMNS.INPUT.TRANSCRIPT],
+            },
+          ]),
+          modelProvider.generateCustomFieldContent(
+            row[config.TRANSCRIPT_PROCESSING.COLUMNS.INPUT.TRANSCRIPT],
+            config.TRANSCRIPT_PROCESSING.PROMPTS.TAGS
+          ),
+          modelProvider.generateCustomFieldContent(
+            row[config.TRANSCRIPT_PROCESSING.COLUMNS.INPUT.TRANSCRIPT],
+            config.TRANSCRIPT_PROCESSING.PROMPTS.NEEDS_SCREENSHOTS
+          ),
+        ]);
 
-      const customFields = {};
-      for (const field of config.TRANSCRIPT_PROCESSING.COLUMNS.OUTPUT
-        .CUSTOM_FIELDS) {
+        const customFields = {};
+        for (const field of config.TRANSCRIPT_PROCESSING.COLUMNS.OUTPUT
+          .CUSTOM_FIELDS) {
+          logger.info(
+            `Generating ${field.name} for ${
+              row[config.TRANSCRIPT_PROCESSING.COLUMNS.INPUT.FILENAME]
+            }`
+          );
+          const content = await modelProvider.generateCustomFieldContent(
+            row[config.TRANSCRIPT_PROCESSING.COLUMNS.INPUT.TRANSCRIPT],
+            field.prompt
+          );
+          customFields[field.name.toLowerCase().replace(/\s+/g, "_")] = content;
+        }
+
         logger.info(
-          `Generating ${field.name} for ${
+          `Completed ${processedCount + 1}/${totalCount}: ${
             row[config.TRANSCRIPT_PROCESSING.COLUMNS.INPUT.FILENAME]
           }`
         );
-        const content = await openaiService.generateCustomFieldContent(
-          row[config.TRANSCRIPT_PROCESSING.COLUMNS.INPUT.TRANSCRIPT],
-          field.prompt
+
+        return {
+          filename: row[config.TRANSCRIPT_PROCESSING.COLUMNS.INPUT.FILENAME],
+          transcription:
+            row[config.TRANSCRIPT_PROCESSING.COLUMNS.INPUT.TRANSCRIPT],
+          summary,
+          tags,
+          needs_screenshots,
+          ...customFields,
+        };
+      } catch (error) {
+        logger.error(
+          `Error processing with ${config.PROCESSING_OPTIONS.MODEL_PROVIDER}: ${error.message}`
         );
-        customFields[field.name.toLowerCase().replace(/\s+/g, "_")] = content;
+        return {
+          filename: row[config.TRANSCRIPT_PROCESSING.COLUMNS.INPUT.FILENAME],
+          transcription:
+            row[config.TRANSCRIPT_PROCESSING.COLUMNS.INPUT.TRANSCRIPT],
+          summary: `Error: ${error.message}`,
+          tags: "Error generating tags",
+          needs_screenshots: "True",
+          ...Object.fromEntries(
+            config.TRANSCRIPT_PROCESSING.COLUMNS.OUTPUT.CUSTOM_FIELDS.map(
+              (field) => [
+                field.name.toLowerCase().replace(/\s+/g, "_"),
+                "Error generating content",
+              ]
+            )
+          ),
+        };
       }
-
-      logger.info(
-        `Completed ${processedCount + 1}/${totalCount}: ${
-          row[config.TRANSCRIPT_PROCESSING.COLUMNS.INPUT.FILENAME]
-        }`
-      );
-
-      return {
-        filename: row[config.TRANSCRIPT_PROCESSING.COLUMNS.INPUT.FILENAME],
-        transcription:
-          row[config.TRANSCRIPT_PROCESSING.COLUMNS.INPUT.TRANSCRIPT],
-        summary,
-        tags,
-        needs_screenshots,
-        ...customFields,
-      };
     } catch (error) {
       logger.error(
         `Error processing ${
@@ -159,15 +185,20 @@ class TranscriptProcessor {
       name: "Processing",
     });
 
-    for (let i = 0; i < remainingRows.length; i++) {
-      const processedRow = await this.processRow(
-        remainingRows[i],
-        i,
-        remainingRows.length
-      );
-      await csvService.writeRecords(this.writer, [processedRow]);
-      progress.increment();
-    }
+    const promises = remainingRows.map((row, index) =>
+      this.limiter(async () => {
+        const processedRow = await this.processRow(
+          row,
+          index,
+          remainingRows.length
+        );
+        await csvService.writeRecords(this.writer, [processedRow]);
+        progress.increment();
+        return processedRow;
+      })
+    );
+
+    await Promise.all(promises);
 
     progress.stop();
     logger.info("All transcripts processed");

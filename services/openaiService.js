@@ -1,8 +1,9 @@
 const OpenAI = require("openai");
-const config = require("../config");
-const logger = require("./loggerService");
+const config = require("../config.js");
+const logger = require("./loggerService.js");
 const path = require("path");
 const dotenv = require("dotenv");
+const pLimit = require("p-limit");
 
 // Load environment variables from .env file
 const envPath = path.join(__dirname, "..", ".env");
@@ -15,7 +16,7 @@ if (result.error) {
 }
 
 class OpenAIService {
-  constructor() {
+  async initialize() {
     if (!process.env.OPENAI_API_KEY) {
       console.error(
         "\n\x1b[41m%s\x1b[0m",
@@ -31,75 +32,116 @@ class OpenAIService {
     this.openai = new OpenAI({
       apiKey: process.env.OPENAI_API_KEY,
     });
+
+    // Initialize rate limiter
+    this.limiter = pLimit(config.API_LIMITS.CONCURRENT_OPENAI_CALLS);
+  }
+
+  async retryOperation(operation, operationName) {
+    for (
+      let attempt = 1;
+      attempt <= config.API_SETTINGS.MAX_RETRIES;
+      attempt++
+    ) {
+      try {
+        return await operation();
+      } catch (error) {
+        if (error.response?.status === 429) {
+          // Rate limit hit - wait longer
+          await new Promise((resolve) =>
+            setTimeout(resolve, config.API_SETTINGS.RATE_LIMIT_DELAY)
+          );
+        } else if (attempt < config.API_SETTINGS.MAX_RETRIES) {
+          // Other error - use standard retry delay
+          await new Promise((resolve) =>
+            setTimeout(resolve, config.API_SETTINGS.RETRY_DELAY)
+          );
+        } else {
+          throw this.handleOpenAIError(error, operationName);
+        }
+      }
+    }
   }
 
   async analyzeScreenshot(base64Image) {
-    try {
-      const response = await this.openai.chat.completions.create({
-        model: "gpt-4-vision-preview",
-        messages: [
-          {
-            role: "user",
-            content: [
-              {
-                type: "text",
-                text: config.SCREENSHOT_PROCESSING.VISION_PROMPT,
-              },
-              {
-                type: "image",
-                image_url: `data:image/jpeg;base64,${base64Image}`,
-              },
-            ],
-          },
-        ],
-        max_tokens: 500,
-      });
-
-      return response.choices[0].message.content.trim();
-    } catch (error) {
-      throw this.handleOpenAIError(error, "screenshot analysis");
-    }
+    return this.limiter(async () => {
+      console.log(
+        `\n🤖 Using OpenAI ${config.MODELS.VISION} for screenshot analysis`
+      );
+      return this.retryOperation(async () => {
+        const response = await this.openai.chat.completions.create({
+          model: config.MODELS.VISION,
+          messages: [
+            {
+              role: "user",
+              content: [
+                {
+                  type: "text",
+                  text: config.SCREENSHOT_PROCESSING.VISION_PROMPT,
+                },
+                {
+                  type: "image_url",
+                  image_url: {
+                    url: `data:image/jpeg;base64,${base64Image}`,
+                    detail: config.SCREENSHOT_PROCESSING.VISION_DETAIL,
+                  },
+                },
+              ],
+            },
+          ],
+          max_tokens: config.SCREENSHOT_PROCESSING.MAX_TOKENS,
+          temperature: config.SCREENSHOT_PROCESSING.TEMPERATURE,
+        });
+        return response.choices[0].message.content.trim();
+      }, "screenshot analysis");
+    });
   }
 
   async generateSummary(analyses) {
-    try {
-      const allText = analyses.map((a) => a.extracted_text).join("\n\n");
-      const response = await this.openai.chat.completions.create({
-        model: "gpt-4",
-        messages: [
-          {
-            role: "user",
-            content: `${config.SCREENSHOT_PROCESSING.SUMMARY_PROMPT}\n\nExtracted Text from Screenshots:\n${allText}`,
-          },
-        ],
-        max_tokens: config.SCREENSHOT_PROCESSING.MAX_TOKENS,
-      });
+    return this.limiter(async () => {
+      console.log(
+        `\n🤖 Using OpenAI ${config.MODELS.SUMMARY} for summary generation`
+      );
+      return this.retryOperation(async () => {
+        const allText = analyses.map((a) => a.extracted_text).join("\n\n");
+        const response = await this.openai.chat.completions.create({
+          model: config.MODELS.SUMMARY,
+          messages: [
+            {
+              role: "user",
+              content: `${config.SCREENSHOT_PROCESSING.SUMMARY_PROMPT}\n\nExtracted Text from Screenshots:\n${allText}`,
+            },
+          ],
+          max_tokens: config.TRANSCRIPT_PROCESSING.MAX_TOKENS.SUMMARY,
+          temperature: config.TRANSCRIPT_PROCESSING.TEMPERATURE.SUMMARY,
+        });
 
-      return response.choices[0].message.content.trim();
-    } catch (error) {
-      logger.error(`Error generating summary: ${error.message}`);
-      return "Error generating summary";
-    }
+        return response.choices[0].message.content.trim();
+      }, "summary generation");
+    });
   }
 
   async generateCustomFieldContent(extractedText, fieldPrompt) {
-    try {
-      const response = await this.openai.chat.completions.create({
-        model: "gpt-4",
-        messages: [
-          {
-            role: "user",
-            content: `${fieldPrompt}\n\nExtracted Text: ${extractedText}`,
-          },
-        ],
-        max_tokens: 500,
-      });
+    return this.limiter(async () => {
+      console.log(
+        `\n🤖 Using OpenAI ${config.MODELS.CUSTOM} for custom field generation`
+      );
+      return this.retryOperation(async () => {
+        const response = await this.openai.chat.completions.create({
+          model: config.MODELS.CUSTOM,
+          messages: [
+            {
+              role: "user",
+              content: `${fieldPrompt}\n\nExtracted Text: ${extractedText}`,
+            },
+          ],
+          max_tokens: config.TRANSCRIPT_PROCESSING.MAX_TOKENS.CUSTOM,
+          temperature: config.TRANSCRIPT_PROCESSING.TEMPERATURE.CUSTOM,
+        });
 
-      return response.choices[0].message.content.trim();
-    } catch (error) {
-      logger.error(`Error generating custom field content: ${error.message}`);
-      return "Error generating content";
-    }
+        return response.choices[0].message.content.trim();
+      }, "custom field generation");
+    });
   }
 
   handleOpenAIError(error, operation) {
@@ -130,4 +172,8 @@ class OpenAIService {
   }
 }
 
-module.exports = new OpenAIService();
+// Create and initialize the service
+const service = new OpenAIService();
+service.initialize();
+
+module.exports = service;
