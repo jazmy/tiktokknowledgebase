@@ -1,6 +1,8 @@
-# Video Processing Pipeline
+# TikTok Knowledge Base
 
 A powerful Node.js application that processes video content through multiple stages to extract and analyze information using AI. The pipeline combines video transcription, screenshot analysis, and AI-powered content understanding.
+
+View Article: [https://genaisecretsauce.com/genai-secret-sauce-for-a-tiktok-knowledge-base/](https://genaisecretsauce.com/genai-secret-sauce-for-a-tiktok-knowledge-base/)
 
 ## Overview
 
@@ -81,68 +83,116 @@ The pipeline generates several CSV files:
 
 This pipeline is ideal for content creators, marketers, and developers who need to process and analyze video content at scale while extracting meaningful insights and structured data.
 
-## Initial Setup
+## Setup
 
-Follow these detailed steps to set up the project and start processing videos:
+### Step 1: **Get the Code**
 
-1. **Clone the Repository:**
+1. **Clone the Repository**  
+   Start by cloning the repository to your local machine. Open your terminal and execute:
 
-   Begin by cloning the repository to your local machine. Open your terminal and execute the following commands:
-
-   ```sh
+   ```bash
    git clone git@github.com:jazmy/tiktokknowledgebase.git
    cd tiktokknowledgebase
    ```
 
-   This will create a local copy of the project and navigate into the project directory.
+   This creates a local copy of the project and navigates into the directory.
 
-2. **Install Project Dependencies:**
+2. **Install Node.js**  
+   If Node.js is not installed, use [Homebrew](https://brew.sh) to install it:
 
-   Ensure you have Node.js installed on your system. Then, install the necessary dependencies by running:
+   ```bash
+   brew install node
+   ```
 
-   ```sh
+3. **Install Project Dependencies**  
+   Run the following command to install all required packages listed in `package.json`:
+
+   ```bash
    npm install
    ```
 
-   This command will read the `package.json` file and install all required packages.
+4. **Install Whisper Model**  
+   Whisper processes audio for transcription. Download the default `base.en` model:
 
-3. **Install Whisper Model:**
-
-   Whisper is used for audio processing. Download the default `base.en` model by executing:
-
-   ```sh
+   ```bash
    npx whisper-node download
    ```
 
-   When prompted, press Enter to confirm downloading the `base.en` model.
+   Press **Enter** to confirm downloading the model.
 
-4. **Configure Environment Variables:**
 
-   The project requires an OpenAI API key. Rename the `.env-example` file to `.env`:
+### Step 2: **Configure Environment and Settings**
 
-   ```sh
+1. **Set Up Environment Variables**  
+   The project requires an OpenAI API key for analysis. Rename the `.env-example` file to `.env`:
+
+   ```bash
    mv .env-example .env
    ```
 
-   Open the `.env` file in a text editor and paste your OpenAI API key in the appropriate field.
+   Open the `.env` file in a text editor and paste your OpenAI API key:
 
-5. **Update Configuration Settings:**
-
-   The project settings are defined in the `config.js` file. Open this file in a text editor to review and update the configuration parameters as needed. Each parameter is documented within the file for your reference.
-
-6. **Prepare Video Files:**
-
-   Place all the video files you wish to process into the `videos` folder located in the project directory. Ensure the folder is correctly named and accessible.
-
-7. **Execute the Video Processing Pipeline:**
-
-   With everything set up, you can now run the video processing pipeline. Execute the following command in your terminal:
-
-   ```sh
-   node processAllVideos.js
+   ```
+   OPENAI_API_KEY=your_openai_api_key_here
    ```
 
-   This will start processing the videos and generate the output as specified in your configuration.
+2. **Review and Update Configuration Settings**  
+   Open the `config.js` file in a text editor to review and update parameters as needed. Documentation is provided within the file for guidance.
+
+
+### Step 3: **Prepare Video Files**
+
+1. **Download TikTok Videos**  
+   Use tools like [4K Tokkit](https://www.4kdownload.com/products/product-tokkit) to download TikTok videos by hashtags or users. Save the videos in a folder named `videos` inside the project directory:
+
+   ```bash
+   cd /Desktop/tiktokknowledgebase
+   mkdir videos
+   ```
+
+2. **Organize Files**  
+   Ensure the video files are properly named and placed in the `videos` folder to avoid processing errors.
+
+
+### Step 4: **Run the Video Processing Pipeline**
+
+1. **Process Videos**  
+   Execute the following command in the terminal:
+
+   ```bash
+   node processAllVideos.js
+   ```
+   This will:
+
+   - Extract audio from each video.
+   - Transcribe the audio into text.
+   - Generate a CSV file with transcripts, summaries, tags, and product mentions.
+
+2. **View Output**  
+   The final output is saved in the `csv` folder as `combined_analysis.csv`. Open it with Numbers, Excel, or any CSV viewer.
+
+### Step 5: **Analyze Your Knowledge Base**
+
+1. **Explore CSV Data**  
+   Fields in the CSV include:
+
+   - **Transcript:** Full transcription of the video.
+   - **Summary:** Concise summary of the content.
+   - **Tags:** Key topics and themes.
+   - **Products:** Mentioned products (if any).
+
+2. **Leverage ChatGPT**  
+   Copy the **Summary** column and paste it into ChatGPT. Ask questions like:
+
+   - *What are the recurring themes in these videos?*
+   - *Can you categorize these summaries by topic?*
+
+
+### Additional Notes
+- **Debugging:** Logs are generated during processing for troubleshooting.
+- **Code Editing:** Use an IDE like [Cursor](https://www.cursor.sh) for a better editing experience.
+- **API Costs:** Processing hundreds of videos may incur minor costs for OpenAI API calls.
+
 
 ## Configuration Parameters
 
